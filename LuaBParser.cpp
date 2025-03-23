@@ -3,24 +3,14 @@
 //
 
 //#include "LuaBParser.h"
+#include "LuaInstructions.h"
+#include "LuaRunner.h"
+#include "LuaChunk.h"
 #include <iostream>
 #include <fstream>
 #include <cstdint>
 #include <vector>
 #include <unordered_map>
-
-struct LuaChunk {
-    std::string name;
-    int first_line;
-    int last_line;
-    uint8_t upvalues;
-    uint8_t arguments;
-    uint8_t vararg;
-    uint8_t stack_size;
-    std::vector<uint32_t> instructions;
-    std::unordered_map<int, std::string> constants;
-    std::vector<LuaChunk> prototypes;
-};
 
 class LuaBParser {
 private :
@@ -73,13 +63,13 @@ private :
         double value;
         uint8_t* ptr = reinterpret_cast<uint8_t*>(&value);
 
-        if (big_endian) {
+        if (!big_endian) {
             for (int i = 0; i < lua_number_size; i++) {
                 ptr[i] = get_byte();  // Lire en Big-endian
             }
         } else {
             for (int i = 0; i < lua_number_size; i++) {
-                ptr[7 - i] = get_byte();  // Lire en Little-endian
+                ptr[lua_number_size - 1 - i] = get_byte();  // Lire en Little-endian
             }
         }
         return value;
@@ -87,6 +77,7 @@ private :
 
     std::string get_string() {
         size_t size = get_size_t();  // Lire la taille de la chaîne
+        std::cout << "SIZE : " << size << std::endl;
 
         if (size == 0) return "";  // Si size == 0, pas de chaîne
 
@@ -154,6 +145,34 @@ public :
         return true;
     }
 
+    void decode_debug_info(LuaChunk &chunk) {
+        // Décodage des numéros de ligne (line info)
+        uint32_t num_line_info = get_int();
+        std::cout << "** DECODING DEBUG INFO: LINE NUMBERS (" << num_line_info << ") **\n";
+        for (uint32_t i = 0; i < num_line_info; i++) {
+            int line = get_int();
+            // Optionnel : std::cout << "Line #" << i << ": " << line << "\n";
+        }
+
+        // Décodage des variables locales
+        uint32_t num_locals = get_int();
+        std::cout << "** DECODING DEBUG INFO: LOCALS (" << num_locals << ") **\n";
+        for (uint32_t i = 0; i < num_locals; i++) {
+            std::string localName = get_string();
+            int startPC = get_int();
+            int endPC = get_int();
+        }
+
+        // Décodage des noms des upvalues
+        uint32_t num_upvalues = get_int();
+        std::cout << "** DECODING DEBUG INFO: UPVALUE NAMES (" << num_upvalues << ") **\n";
+        for (uint32_t i = 0; i < num_upvalues; i++) {
+            std::string upName = get_string();
+            std::cout << "Upvalue #" << i << ": " << upName << "\n";
+        }
+    }
+
+
     LuaChunk decode_chunk(){
         chunk.name = get_string();
         chunk.first_line = get_int();
@@ -173,9 +192,13 @@ public :
         std::cout << "Stack Size: " << static_cast<int>(chunk.stack_size) << "\n";
         decode_instructions(chunk);
         decode_constants(chunk);
+        decode_prototypes(chunk);
+        decode_debug_info(chunk);
 
         return chunk;
     }
+
+
 
     void decode_instructions(LuaChunk& chunk) {
         uint32_t num_instructions = get_int();
@@ -183,8 +206,6 @@ public :
 
         for (uint32_t i = 0; i < num_instructions; i++) {
             uint32_t instr = get_int();
-            chunk.instructions.push_back(instr);
-
             uint8_t opcode = instr & 0x3F;
             uint8_t A = (instr >> 6) & 0xFF;
             uint16_t B = (instr >> 23) & 0x1FF;
@@ -192,15 +213,22 @@ public :
             uint32_t Bx = (instr >> 14) & 0x3FFFF;
             int32_t sBx = Bx - 131071;
 
+            LuaInstructions instruction(opcode, A, B, C, Bx, sBx);
+            chunk.addInstruction(instruction);
+
             std::cout << "Instruction #" << i << " - Opcode: " << static_cast<int>(opcode)
                       << ", A: " << static_cast<int>(A)
                       << ", B: " << static_cast<int>(B)
                       << ", C: " << static_cast<int>(C)
                       << ", Bx: " << Bx
-                      << ", sBx: " << sBx << std::endl;
+                      << ", sBx: " << sBx
+                      << " - " << instruction.opcodeName
+                      << std::endl;
         }
     }
+
     void decode_constants(LuaChunk& chunk) {
+        double temp;
         uint32_t num_constants = get_int();
         std::cout << "** DECODING CONSTANTS (" << num_constants << ") **\n";
 
@@ -215,9 +243,11 @@ public :
                 case 1:
                     value = (get_byte() ? "true" : "false");
                     break;
-                case 3:
-                    value = std::to_string(get_size_t());
-                    break;
+                case 3:{
+                    temp = get_lua_number();
+                    std::cout << "OUIIII : " <<  temp << std::endl;
+                    value = std::to_string(temp);
+                    break;}
                 case 4:
                     value = get_string();
                     break;
@@ -233,19 +263,33 @@ public :
     void decode_prototypes(LuaChunk& chunk) {
         uint32_t num_protos = get_int();
         std::cout << "** DECODING PROTOTYPES (" << num_protos << ") **\n";
-
         for (uint32_t i = 0; i < num_protos; i++) {
+            std::cout << "Prototype #" << i << std::endl;
             chunk.prototypes.push_back(decode_chunk());
         }
+    }
+    LuaChunk parse() {
+        parse_lua_header();
+        return decode_chunk();
     }
 
 };
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <bytecode luac>\n";
+        return 1;
+    }
+
+    std::string filename = argv[1];
+
     LuaBParser parser;
-    parser.load("luac.out");
-    parser.parse_lua_header();
-    LuaChunk chunk = parser.decode_chunk();
+    parser.load(filename);
+    LuaChunk chunk = parser.parse();
+
+    LuaRunner runner(chunk);
+    runner.run();
+
     return 0;
 }
 

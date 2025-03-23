@@ -5,7 +5,10 @@ This project have for objective to implements a Virtual Machine for Lua 5.1 byte
 You'll find sources a the end of this files.
 
 
-
+Pour LuaRunner, OPCODE 28/5 :
+L'idée original est que GETGLOBAL - op5 récupère le pointeur vers la fonction print dans la table globale, et le range dans un registre.
+Puis on appele ce qui est dans ce registre avec CALL-op28.
+Ici, GETGLOBAL recupère juste le nom, et c'est CALL qui va chercher la fonction dans la table globale.
 
 
 Sources :
